@@ -1,0 +1,316 @@
+Parameters:
+  KeyName:
+    Default: issamkey
+    Description: The EC2 key Pair to allow SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+
+Resources:
+
+  webserverVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+      - Key: Name
+        Value: serveur web VPC
+
+  webserverIGW:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: webserverVPC
+    Properties:
+      Tags:
+      - Key: Name
+        Value: serveur web IGW
+
+
+  IGWAttachVPC:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref webserverIGW
+      VpcId: !Ref webserverVPC
+  
+  webserverSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: webserverVPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: "us-east-1b"
+      Tags:
+      - Key: Name 
+        Value: serveur web Subnet
+
+
+  webserverRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref webserverVPC
+      Tags:
+      - Key: Name
+        Value: serveur web Route Table
+
+  webserverRoute:
+   Type: AWS::EC2::Route
+   DependsOn: IGWAttachVPC
+   Properties:
+    RouteTableId: !Ref webserverRouteTable
+    DestinationCidrBlock: 0.0.0.0/0
+    GatewayId: !Ref webserverIGW
+
+  webserverRouteToSubnet:
+   Type: AWS::EC2::SubnetRouteTableAssociation
+   Properties:
+      RouteTableId: !Ref webserverRouteTable
+      SubnetId: !Ref webserverSubnet 
+
+
+    
+  dbserverEC2instance:
+    Type: 'AWS::EC2::Instance'
+    Properties: 
+      InstanceType: "t2.micro"
+      ImageId: 'ami-0ed9277fb7eb570c9'
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: "true"
+        DeviceIndex: "0"
+        GroupSet:
+          - Ref: "dbserverSecurityGroup"
+        SubnetId:
+          Ref: "webserverSubnet"
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum -y update
+
+          sudo yum install -y mariadb-server
+          systemctl enable mariadb
+          systemctl start mariadb
+            
+          mysql -e "CREATE DATABASE db_user;"
+          mysql -e "CREATE USER appuser IDENTIFIED BY 'root';"
+          mysql -e "GRANT ALL PRIVILEGES ON db_user.* TO 'appuser';" 
+          mysql -e "FLUSH PRIVILEGES;"
+
+      Tags:
+      - Key: Name
+        Value: serveur BD
+
+#mysql -u root;
+#CREATE DATABASE db_user;
+
+  dbserverSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH access via port 22 and db access via port 80
+      VpcId: !Ref webserverVPC
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3306 
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 7 
+          ToPort: 7
+          CidrIp: 0.0.0.0/0
+
+  appserverEC2instance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: "t2.micro" 
+      ImageId: 'ami-0ed9277fb7eb570c9'
+      KeyName: !Ref KeyName
+  
+  
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: "true" 
+        DeviceIndex: "0"
+        GroupSet:
+          - Ref: "appserverSecurityGroup"
+        SubnetId:
+          Ref: "webserverSubnet"
+
+      UserData:
+        Fn::Base64: 
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              sudo yum -y update
+              yum -y install git
+
+              sudo amazon-linux-extras install java-openjdk11
+              sudo yum -y install java-11-openjdk-devel
+
+
+              wget https://archive.apache.org/dist/maven/maven-3/3.8.3/binaries/apache-maven-3.8.3-bin.tar.gz 
+              sudo tar xf apache-maven-3.8.3-bin.tar.gz -C /opt
+              sudo ln -s /opt/apache-maven-3.8.3 /opt/maven
+
+              sudo rm apache-maven-3.8.3-bin.tar.gz
+        
+              cd /home/ec2-user
+        
+              mkdir /home/ec2-user/app
+              sudo chown ec2-user:ec2-user app 
+              cd /home/ec2-user/app 
+              git clone https://github.com/boussiissameddine/application.git 
+              sudo chown -R ec2-user:ec2-user application
+
+              cd application
+              sudo cp maven.sh /etc/profile.d/maven.sh
+              chmod +x /etc/profile.d/maven.sh 
+              source /etc/profile.d/maven.sh
+
+              cd src/main/resources
+
+              sed -i 's/127.0.0.1/${dbserver}/g' application.properties
+        
+              cd /home/ec2-user/app/application
+        
+              mvn package
+       
+              java -jar target/Spring-boot-User-demo-0.0.1-SNAPSHOT.jar
+
+            - dbserver: !GetAtt dbserverEC2instance.PublicIp
+      Tags:
+      - Key: Name
+        Value: serveur application
+
+
+#mvn spring-boot:run
+
+
+
+  appserverSecurityGroup: 
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH access via port 22 and HTTP access via port 8080
+      VpcId: !Ref webserverVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 
+        - IpProtocol: tcp
+          FromPort: 8080 
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
+  webserverEC2instance:
+    Type: 'AWS::EC2::Instance' 
+    Properties:
+      InstanceType: "t2.micro" 
+      ImageId: 'ami-0ed9277fb7eb570c9'
+      KeyName: !Ref KeyName
+
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: "true" 
+        DeviceIndex: "0"
+        GroupSet:
+          - Ref: "webserverSecurityGroup"
+        SubnetId:
+          Ref: "webserverSubnet"
+
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              yum -y update
+              yum -y install git
+              curl -sL https://rpm.nodesource.com/setup_16.x | sudo bash -
+              yum -y install nodejs
+              yum -y install gcc-c++ make
+              mkdir /home/ec2-user/app
+              cd /home/ec2-user 
+              chown - R ec2-user: ec2-user app
+              
+              cd /home/ec2-user/app
+              
+              git clone https://github.com/boussiissameddine/application.git
+              
+              chown -R ec2-user:ec2-user application
+              
+              cd /home/ec2-user/app/application/Frontend/src
+              
+              sed -i 's/backend_ip/${backendip}/g' index.js
+              
+              cd /home/ec2-user/app/application/Frontend
+              
+              npm install --global yarn
+              
+              yarn
+              
+              yarn build
+              
+              cd /home/ec2-user/app
+              
+              chown -R ec2-user:ec2-user application
+              
+              
+              yum -y install httpd
+              
+              systemctl enable httpd
+              
+              systemctl start httpd
+              
+              cd /home/ec2-user/app/application/Frontend/build
+              
+              cp -r * /var/www/html
+
+            - backendip: !GetAtt appserverEC2instance.PublicIp
+      
+      Tags:
+      - Key: Name
+        Value: serveur web
+
+    
+
+  webserverSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH access via port 22, app access via port 3000 and http access via port 80
+      VpcId: !Ref webserverVPC
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 22 
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp 
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0 
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80 
+          CidrIp: 0.0.0.0/0
+
+
+Outputs:
+  WebserverIP:
+    Description: EC2 public IP
+    Value: !GetAtt webserverEC2instance.PublicIp
+  WebserverURL:
+    Description: serveur web
+    Value: !Sub "http://${webserverEC2instance.PublicDnsName}:80/"
+  appserverIP:
+    Description: EC2 public IP 
+    Value: !GetAtt appserverEC2instance.PublicIp
+  appserverURL:
+    Description: serveur application 
+    Value: !Sub "http://${appserverEC2instance.PublicDnsName}:8080/users" 
+  dbserverIP:
+    Description: EC2 public IP
+    Value: !GetAtt dbserverEC2instance.PublicIp
+  dbserverURL: 
+    Description: serveur BD
+    Value: !Sub "http://${dbserverEC2instance.PublicDnsName}:3306/"
+      
+

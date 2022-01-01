@@ -1,5 +1,16 @@
+def commit_id
 pipeline {
     agent any
+    stages {
+        stage('preparation') {
+            steps {
+                checkout scm
+                sh "git rev-parse --short HEAD > .git/commit-id"
+                script {
+                    commit_id = readFile('.git/commit-id').trim()
+                }
+            }
+        }
         stages {
         stage('Submit Stack') {
             steps {
@@ -8,3 +19,4 @@ pipeline {
              }
             }
             }
+           }

@@ -1,0 +1,355 @@
+{
+    "Parameters": {
+        "KeyName": {
+            "Default": "issamkey",
+            "Description": "The EC2 key Pair to allow SSH access to the instance",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        }
+    },
+    "Resources": {
+        "webserverVPC": {
+            "Type": "AWS::EC2::VPC",
+            "Properties": {
+                "CidrBlock": "10.0.0.0/16",
+                "EnableDnsSupport": "true",
+                "EnableDnsHostnames": "true",
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "serveur web VPC"
+                    }
+                ]
+            }
+        },
+        "webserverIGW": {
+            "Type": "AWS::EC2::InternetGateway",
+            "DependsOn": "webserverVPC",
+            "Properties": {
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "serveur web IGW"
+                    }
+                ]
+            }
+        },
+        "IGWAttachVPC": {
+            "Type": "AWS::EC2::VPCGatewayAttachment",
+            "Properties": {
+                "InternetGatewayId": {
+                    "Ref": "webserverIGW"
+                },
+                "VpcId": {
+                    "Ref": "webserverVPC"
+                }
+            }
+        },
+        "webserverSubnet": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "webserverVPC"
+                },
+                "CidrBlock": "10.0.0.0/24",
+                "AvailabilityZone": "us-east-1b",
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "serveur web Subnet"
+                    }
+                ]
+            }
+        },
+        "webserverRouteTable": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "webserverVPC"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "serveur web Route Table"
+                    }
+                ]
+            }
+        },
+        "webserverRoute": {
+            "Type": "AWS::EC2::Route",
+            "DependsOn": "IGWAttachVPC",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "webserverRouteTable"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "GatewayId": {
+                    "Ref": "webserverIGW"
+                }
+            }
+        },
+        "webserverRouteToSubnet": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "webserverRouteTable"
+                },
+                "SubnetId": {
+                    "Ref": "webserverSubnet"
+                }
+            }
+        },
+        "dbserverEC2instance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "InstanceType": "t2.micro",
+                "ImageId": "ami-0ed9277fb7eb570c9",
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "NetworkInterfaces": [
+                    {
+                        "AssociatePublicIpAddress": "true",
+                        "DeviceIndex": "0",
+                        "GroupSet": [
+                            {
+                                "Ref": "dbserverSecurityGroup"
+                            }
+                        ],
+                        "SubnetId": {
+                            "Ref": "webserverSubnet"
+                        }
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Sub": "#!/bin/bash\nsudo yum -y update\n\nsudo yum install -y mariadb-server\nsystemctl enable mariadb\nsystemctl start mariadb\n  \nmysql -e \"CREATE DATABASE db_user;\"\nmysql -e \"CREATE USER appuser IDENTIFIED BY 'root';\"\nmysql -e \"GRANT ALL PRIVILEGES ON db_user.* TO 'appuser';\" \nmysql -e \"FLUSH PRIVILEGES;\"\n"
+                    }
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "serveur BD"
+                    }
+                ]
+            }
+        },
+        "dbserverSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable SSH access via port 22 and db access via port 80",
+                "VpcId": {
+                    "Ref": "webserverVPC"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 22,
+                        "ToPort": 22,
+                        "CidrIp": "0.0.0.0/0"
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 3306,
+                        "ToPort": 3306,
+                        "CidrIp": "0.0.0.0/0"
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 7,
+                        "ToPort": 7,
+                        "CidrIp": "0.0.0.0/0"
+                    }
+                ]
+            }
+        },
+        "appserverEC2instance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "InstanceType": "t2.micro",
+                "ImageId": "ami-0ed9277fb7eb570c9",
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "NetworkInterfaces": [
+                    {
+                        "AssociatePublicIpAddress": "true",
+                        "DeviceIndex": "0",
+                        "GroupSet": [
+                            {
+                                "Ref": "appserverSecurityGroup"
+                            }
+                        ],
+                        "SubnetId": {
+                            "Ref": "webserverSubnet"
+                        }
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Sub": [
+                            "#!/bin/bash\nsudo yum -y update\nyum -y install git\n\nsudo amazon-linux-extras install java-openjdk11\nsudo yum -y install java-11-openjdk-devel\n\n\nwget https://archive.apache.org/dist/maven/maven-3/3.8.3/binaries/apache-maven-3.8.3-bin.tar.gz \nsudo tar xf apache-maven-3.8.3-bin.tar.gz -C /opt\nsudo ln -s /opt/apache-maven-3.8.3 /opt/maven\n\nsudo rm apache-maven-3.8.3-bin.tar.gz\n\ncd /home/ec2-user\n\nmkdir /home/ec2-user/app\nsudo chown ec2-user:ec2-user app \ncd /home/ec2-user/app \ngit clone https://github.com/boussiissameddine/application.git \nsudo chown -R ec2-user:ec2-user application\n\ncd application\nsudo cp maven.sh /etc/profile.d/maven.sh\nchmod +x /etc/profile.d/maven.sh \nsource /etc/profile.d/maven.sh\n\ncd src/main/resources\n\nsed -i 's/127.0.0.1/${dbserver}/g' application.properties\n\ncd /home/ec2-user/app/application\n\nmvn package\n\njava -jar target/Spring-boot-User-demo-0.0.1-SNAPSHOT.jar\n",
+                            {
+                                "dbserver": {
+                                    "Fn::GetAtt": [
+                                        "dbserverEC2instance",
+                                        "PublicIp"
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "serveur application"
+                    }
+                ]
+            }
+        },
+        "appserverSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable SSH access via port 22 and HTTP access via port 8080",
+                "VpcId": {
+                    "Ref": "webserverVPC"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 22,
+                        "ToPort": 22,
+                        "CidrIp": "0.0.0.0/0"
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 8080,
+                        "ToPort": 8080,
+                        "CidrIp": "0.0.0.0/0"
+                    }
+                ]
+            }
+        },
+        "webserverEC2instance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "InstanceType": "t2.micro",
+                "ImageId": "ami-0ed9277fb7eb570c9",
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "NetworkInterfaces": [
+                    {
+                        "AssociatePublicIpAddress": "true",
+                        "DeviceIndex": "0",
+                        "GroupSet": [
+                            {
+                                "Ref": "webserverSecurityGroup"
+                            }
+                        ],
+                        "SubnetId": {
+                            "Ref": "webserverSubnet"
+                        }
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Sub": [
+                            "#!/bin/bash\nyum -y update\nyum -y install git\ncurl -sL https://rpm.nodesource.com/setup_16.x | sudo bash -\nyum -y install nodejs\nyum -y install gcc-c++ make\nmkdir /home/ec2-user/app\ncd /home/ec2-user \nchown - R ec2-user: ec2-user app\n\ncd /home/ec2-user/app\n\ngit clone https://github.com/boussiissameddine/application.git\n\nchown -R ec2-user:ec2-user application\n\ncd /home/ec2-user/app/application/Frontend/src\n\nsed -i 's/backend_ip/${backendip}/g' index.js\n\ncd /home/ec2-user/app/application/Frontend\n\nnpm install --global yarn\n\nyarn\n\nyarn build\n\ncd /home/ec2-user/app\n\nchown -R ec2-user:ec2-user application\n\n\nyum -y install httpd\n\nsystemctl enable httpd\n\nsystemctl start httpd\n\ncd /home/ec2-user/app/application/Frontend/build\n\ncp -r * /var/www/html\n",
+                            {
+                                "backendip": {
+                                    "Fn::GetAtt": [
+                                        "appserverEC2instance",
+                                        "PublicIp"
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "serveur web"
+                    }
+                ]
+            }
+        },
+        "webserverSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable SSH access via port 22, app access via port 3000 and http access via port 80",
+                "VpcId": {
+                    "Ref": "webserverVPC"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 22,
+                        "ToPort": 22,
+                        "CidrIp": "0.0.0.0/0"
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 3000,
+                        "ToPort": 3000,
+                        "CidrIp": "0.0.0.0/0"
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 80,
+                        "ToPort": 80,
+                        "CidrIp": "0.0.0.0/0"
+                    }
+                ]
+            }
+        }
+    },
+    "Outputs": {
+        "WebserverIP": {
+            "Description": "EC2 public IP",
+            "Value": {
+                "Fn::GetAtt": [
+                    "webserverEC2instance",
+                    "PublicIp"
+                ]
+            }
+        },
+        "WebserverURL": {
+            "Description": "serveur web",
+            "Value": {
+                "Fn::Sub": "http://${webserverEC2instance.PublicDnsName}:80/"
+            }
+        },
+        "appserverIP": {
+            "Description": "EC2 public IP",
+            "Value": {
+                "Fn::GetAtt": [
+                    "appserverEC2instance",
+                    "PublicIp"
+                ]
+            }
+        },
+        "appserverURL": {
+            "Description": "serveur application",
+            "Value": {
+                "Fn::Sub": "http://${appserverEC2instance.PublicDnsName}:8080/users"
+            }
+        },
+        "dbserverIP": {
+            "Description": "EC2 public IP",
+            "Value": {
+                "Fn::GetAtt": [
+                    "dbserverEC2instance",
+                    "PublicIp"
+                ]
+            }
+        },
+        "dbserverURL": {
+            "Description": "serveur BD",
+            "Value": {
+                "Fn::Sub": "http://${dbserverEC2instance.PublicDnsName}:3306/"
+            }
+        }
+    }
+}
